@@ -1,0 +1,6 @@
+name: pkg2
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+prefix: D:\miniconda\envs\pkg2

@@ -1,0 +1,102 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+
+# =========================
+# Virtual environments
+# =========================
+.venv/
+venv/
+env/
+ENV/
+.conda/
+conda-meta/
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+
+# =========================
+# IDE / OS
+# =========================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# =========================
+# Local environment files
+# =========================
+.env
+.env.*
+*.local
+
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+
+# =========================
+# Data directories
+# Ignore data contents but allow directory placeholder
+# =========================
+data/raw/**
+data/interim/**
+data/processed/**
+
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+
+# =========================
+# Large data files
+# =========================
+*.tsv
+*.tsv.gz
+*.csv
+*.csv.gz
+*.jsonl
+*.jsonl.gz
+*.parquet
+*.arrow
+*.feather
+*.orc
+*.duckdb
+*.db
+*.sqlite
+*.sqlite3
+
+# =========================
+# Model outputs / checkpoints
+# =========================
+checkpoints/
+runs/
+wandb/
+mlruns/
+outputs/
+artifacts/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# =========================
+# Temporary files
+# =========================
+tmp/
+temp/
+.cache/
