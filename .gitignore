@@ -57,10 +57,14 @@ logs/
 data/raw/**
 data/interim/**
 data/processed/**
+data/datasets/**
+data/results/**
 
 !data/raw/.gitkeep
 !data/interim/.gitkeep
 !data/processed/.gitkeep
+!data/datasets/.gitkeep
+!data/results/.gitkeep
 
 # =========================
 # Large data files
