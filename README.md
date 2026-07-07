@@ -14,7 +14,7 @@ The current environment was initialized with:
 pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cu128
 pip install torch_geometric
 pip install pyg_lib torch_scatter torch_sparse -f https://data.pyg.org/whl/torch-2.10.0+cu128.html
-pip install polars duckdb pyarrow pyyaml typer rich tqdm loguru pytest ipykernel pandas scikit-learn xgboost lightgbm
+pip install polars duckdb pyarrow pyyaml typer rich tqdm loguru pytest ipykernel pandas scikit-learn xgboost lightgbm tensorboard
 ```
 
 Recommended short sanity check after setup:
