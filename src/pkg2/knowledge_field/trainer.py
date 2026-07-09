@@ -90,6 +90,9 @@ GRAPH_MODELS = {
     "graphsage",
     "weighted_diffusion",
     "reaction_diffusion_source",
+    "rdgnn_style",
+    "grand_style",
+    "dynamic_rds"
 }
 
 
@@ -143,6 +146,7 @@ class TrainingConfig:
     use_source_branch: bool = True
     use_proxy_branch: bool = True
     infer_feature_groups: bool = True
+    dynamic_state_dim: int = 16
 
     # Logging / outputs.
     tensorboard: bool = False
@@ -163,6 +167,9 @@ class TrainingConfig:
 
         if self.num_layers <= 0:
             raise ValueError("num_layers must be positive.")
+
+        if self.dynamic_state_dim <= 0:
+            raise ValueError("dynamic_state_dim must be positive.")
 
         if self.batch_size <= 0:
             raise ValueError("batch_size must be positive.")
@@ -496,6 +503,9 @@ class KnowledgeFieldTrainer:
             if self.config.model_name in {
                 "weighted_diffusion",
                 "reaction_diffusion_source",
+                "rdgnn_style",
+                "grand_style",
+                "dynamic_rds"
             }:
                 self.edge_weight = self.dataset.load_edge_weight()
             else:
@@ -519,6 +529,7 @@ class KnowledgeFieldTrainer:
             add_self_loop=self.config.add_self_loop,
             use_source_branch=self.config.use_source_branch,
             use_proxy_branch=self.config.use_proxy_branch,
+            dynamic_state_dim=self.config.dynamic_state_dim,
         ).to(self.device)
 
         self.optimizer = build_optimizer(
@@ -541,7 +552,10 @@ class KnowledgeFieldTrainer:
         self.log("")
 
     def _build_feature_groups(self) -> FeatureGroups | None:
-        if self.config.model_name != "reaction_diffusion_source":
+        if self.config.model_name not in {
+            "reaction_diffusion_source",
+            "dynamic_rds"
+        }:
             return None
 
         if not self.config.infer_feature_groups:

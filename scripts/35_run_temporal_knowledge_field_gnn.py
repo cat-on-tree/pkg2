@@ -119,6 +119,9 @@ def parse_args() -> argparse.Namespace:
             "graphsage",
             "weighted_diffusion",
             "reaction_diffusion_source",
+            "rdgnn_style",
+            "grand_style",
+            "dynamic_rds"
         ],
         default="graphsage",
     )
@@ -304,6 +307,16 @@ def parse_args() -> argparse.Namespace:
         help="Disable heuristic feature grouping for RDS model.",
     )
 
+    parser.add_argument(
+        "--dynamic-state-dim",
+        type=int,
+        default=16,
+        help=(
+            "State dimension for dynamic_rds. "
+            "v1 used scalar state_dim=1; v2 defaults to vector state_dim=16."
+        ),
+    )
+
     # TensorBoard / logging.
     parser.add_argument(
         "--tensorboard",
@@ -419,6 +432,7 @@ def build_config(args: argparse.Namespace) -> TrainingConfig:
         use_source_branch=not args.no_source_branch,
         use_proxy_branch=not args.no_proxy_branch,
         infer_feature_groups=not args.no_infer_feature_groups,
+        dynamic_state_dim=args.dynamic_state_dim,
         tensorboard=args.tensorboard,
         tensorboard_histograms=args.tensorboard_histograms,
         tensorboard_root=str(args.tensorboard_root),

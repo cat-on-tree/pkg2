@@ -75,6 +75,9 @@ SUPPORTED_MODELS = (
     "graphsage",
     "weighted_diffusion",
     "reaction_diffusion_source",
+    "rdgnn_style",
+    "grand_style",
+    "dynamic_rds"
 )
 
 
@@ -176,6 +179,325 @@ class MLPRegressor(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x).squeeze(-1)
+
+
+class RDGNNStyleConv(MessagePassing if MessagePassing is not None else nn.Module):
+    """Generic reaction-diffusion graph layer.
+
+    h_i_next =
+        h_i
+      + alpha * R(h_i)
+      + beta * sum_j norm(w_ji) * Phi(h_j - h_i)
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int,
+        *,
+        dropout: float = 0.1,
+        eps: float = 1e-12,
+    ) -> None:
+        if MessagePassing is None:
+            raise ImportError(
+                "torch_geometric.nn.MessagePassing is unavailable. "
+                "Please install PyTorch Geometric."
+            )
+
+        super().__init__(aggr="add", node_dim=0)
+
+        self.hidden_dim = int(hidden_dim)
+        self.dropout = float(dropout)
+        self.eps = float(eps)
+
+        self.reaction = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+        self.diffusion_message = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+        self.alpha = nn.Parameter(torch.tensor(0.1))
+        self.beta = nn.Parameter(torch.tensor(0.1))
+        self.norm = nn.LayerNorm(hidden_dim)
+
+    def forward(
+        self,
+        h: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if edge_weight is None:
+            edge_weight = torch.ones(
+                edge_index.size(1),
+                device=edge_index.device,
+                dtype=h.dtype,
+            )
+        else:
+            edge_weight = edge_weight.to(device=edge_index.device, dtype=h.dtype)
+
+        row, col = edge_index[0], edge_index[1]
+
+        deg = torch.zeros(
+            h.size(0),
+            device=h.device,
+            dtype=h.dtype,
+        )
+        deg.scatter_add_(0, col, edge_weight)
+        norm_weight = edge_weight / deg[col].clamp_min(self.eps)
+
+        diffusion = self.propagate(
+            edge_index=edge_index,
+            h=h,
+            norm_weight=norm_weight,
+        )
+
+        reaction = self.reaction(h)
+
+        h_next = h + self.alpha * reaction + self.beta * diffusion
+        return self.norm(h_next)
+
+    def message(
+        self,
+        h_i: torch.Tensor,
+        h_j: torch.Tensor,
+        norm_weight: torch.Tensor,
+    ) -> torch.Tensor:
+        flux = h_j - h_i
+        msg = self.diffusion_message(flux)
+        return msg * norm_weight.view(-1, 1)
+
+
+class RDGNNStyleRegressor(nn.Module):
+    """RDGNN-style reaction-diffusion baseline.
+
+    This is a generic physics-style representation dynamics baseline.
+    It does not explicitly separate local/source/proxy branches.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int = 128,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+
+        if num_layers <= 0:
+            raise ValueError("num_layers must be positive.")
+
+        self.input_dim = int(input_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.num_layers = int(num_layers)
+        self.dropout = float(dropout)
+
+        self.input_proj = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+
+        self.layers = nn.ModuleList(
+            [
+                RDGNNStyleConv(
+                    hidden_dim=hidden_dim,
+                    dropout=dropout,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+
+        self.head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def encode(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        h = self.input_proj(x)
+
+        for layer in self.layers:
+            h = layer(h, edge_index=edge_index, edge_weight=edge_weight)
+            h = F.relu(h)
+            h = F.dropout(h, p=self.dropout, training=self.training)
+
+        return h
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        h = self.encode(x, edge_index=edge_index, edge_weight=edge_weight)
+        return self.head(h).squeeze(-1)
+
+
+class GRANDStyleConv(MessagePassing if MessagePassing is not None else nn.Module):
+    """GRAND-style graph diffusion / neural PDE layer.
+
+    h_i_next =
+        h_i
+      + dt * (
+            weighted_mean_neighbors(h)_i
+          - h_i
+          + R(h_i)
+        )
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int,
+        *,
+        dropout: float = 0.1,
+        eps: float = 1e-12,
+    ) -> None:
+        if MessagePassing is None:
+            raise ImportError(
+                "torch_geometric.nn.MessagePassing is unavailable. "
+                "Please install PyTorch Geometric."
+            )
+
+        super().__init__(aggr="add", node_dim=0)
+
+        self.hidden_dim = int(hidden_dim)
+        self.dropout = float(dropout)
+        self.eps = float(eps)
+
+        self.reaction = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+        self.dt = nn.Parameter(torch.tensor(0.1))
+        self.norm = nn.LayerNorm(hidden_dim)
+
+    def forward(
+        self,
+        h: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if edge_weight is None:
+            edge_weight = torch.ones(
+                edge_index.size(1),
+                device=edge_index.device,
+                dtype=h.dtype,
+            )
+        else:
+            edge_weight = edge_weight.to(device=edge_index.device, dtype=h.dtype)
+
+        row, col = edge_index[0], edge_index[1]
+
+        deg = torch.zeros(
+            h.size(0),
+            device=h.device,
+            dtype=h.dtype,
+        )
+        deg.scatter_add_(0, col, edge_weight)
+        norm_weight = edge_weight / deg[col].clamp_min(self.eps)
+
+        neigh_mean = self.propagate(
+            edge_index=edge_index,
+            h=h,
+            norm_weight=norm_weight,
+        )
+
+        diffusion = neigh_mean - h
+        reaction = self.reaction(h)
+
+        h_next = h + self.dt * (diffusion + reaction)
+        return self.norm(h_next)
+
+    def message(
+        self,
+        h_j: torch.Tensor,
+        norm_weight: torch.Tensor,
+    ) -> torch.Tensor:
+        return h_j * norm_weight.view(-1, 1)
+
+
+class GRANDStyleRegressor(nn.Module):
+    """GRAND-style graph diffusion / neural PDE baseline."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int = 128,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+
+        if num_layers <= 0:
+            raise ValueError("num_layers must be positive.")
+
+        self.input_dim = int(input_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.num_layers = int(num_layers)
+        self.dropout = float(dropout)
+
+        self.input_proj = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+
+        self.layers = nn.ModuleList(
+            [
+                GRANDStyleConv(
+                    hidden_dim=hidden_dim,
+                    dropout=dropout,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+
+        self.head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def encode(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        h = self.input_proj(x)
+
+        for layer in self.layers:
+            h = layer(h, edge_index=edge_index, edge_weight=edge_weight)
+            h = F.relu(h)
+            h = F.dropout(h, p=self.dropout, training=self.training)
+
+        return h
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        h = self.encode(x, edge_index=edge_index, edge_weight=edge_weight)
+        return self.head(h).squeeze(-1)
 
 
 class GraphSAGERegressor(nn.Module):
@@ -593,6 +915,400 @@ class ReactionDiffusionSourceRegressor(nn.Module):
         return self.head(h).squeeze(-1)
 
 
+class GraphFluxDiffusion(MessagePassing if MessagePassing is not None else nn.Module):
+    """Physical graph flux diffusion over a vector knowledge state.
+
+    Computes:
+
+        D_i = sum_j norm(w_ji) * (u_j - u_i)
+
+    where u_i can be scalar [N, 1] or vector [N, state_dim].
+
+    This is a true flux / state-difference operator, not standard neighbor
+    aggregation sum_j w_ji * h_j.
+    """
+
+    def __init__(
+        self,
+        *,
+        eps: float = 1e-12,
+    ) -> None:
+        if MessagePassing is None:
+            raise ImportError(
+                "torch_geometric.nn.MessagePassing is unavailable. "
+                "Please install PyTorch Geometric."
+            )
+
+        super().__init__(aggr="add", node_dim=0)
+        self.eps = float(eps)
+
+    def forward(
+        self,
+        u: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Compute graph diffusion flux.
+
+        Parameters
+        ----------
+        u:
+            Node knowledge state with shape [num_nodes, state_dim].
+        edge_index:
+            PyG edge index with source -> target convention.
+        edge_weight:
+            Optional edge conductance / proximity weights.
+        """
+
+        if u.dim() != 2:
+            raise ValueError(
+                f"GraphFluxDiffusion expects u with shape [N, state_dim], "
+                f"got {tuple(u.shape)}."
+            )
+
+        if edge_weight is None:
+            edge_weight = torch.ones(
+                edge_index.size(1),
+                device=edge_index.device,
+                dtype=u.dtype,
+            )
+        else:
+            edge_weight = edge_weight.to(device=edge_index.device, dtype=u.dtype)
+
+        # PyG convention:
+        # edge_index[0] = source j
+        # edge_index[1] = target i
+        target = edge_index[1]
+
+        # Normalize by target weighted in-degree.
+        deg = torch.zeros(
+            u.size(0),
+            device=u.device,
+            dtype=u.dtype,
+        )
+        deg.scatter_add_(0, target, edge_weight)
+        norm_weight = edge_weight / deg[target].clamp_min(self.eps)
+
+        return self.propagate(
+            edge_index=edge_index,
+            u=u,
+            norm_weight=norm_weight,
+        )
+
+    def message(
+        self,
+        u_i: torch.Tensor,
+        u_j: torch.Tensor,
+        norm_weight: torch.Tensor,
+    ) -> torch.Tensor:
+        # True physical flux: neighbor state minus focal state.
+        flux = u_j - u_i
+        return flux * norm_weight.view(-1, 1)
+
+
+class DynamicRDSRegressor(nn.Module):
+    """Dynamic Reaction-Diffusion-Source Knowledge Field model v2.
+
+    v2 upgrades the scalar state in v1 to a vector knowledge state:
+
+        u_i(t) ∈ R^d
+
+    and performs an Euler-style update:
+
+        u_i(t + dt)
+        =
+        u_i(t)
+        +
+        dt * [
+            R_i(t)
+          + S_i(t)
+          + P_i(t)
+          + D_i(t)
+          - Lambda_i(t)
+        ]
+
+    where all terms are vector-valued:
+
+        R_i(t), S_i(t), P_i(t), D_i(t), Lambda_i(t) ∈ R^d
+
+    The diffusion term remains a true physical flux:
+
+        D_i(t) = sum_j kappa_ij * (u_j(t) - u_i(t))
+
+    The final score is predicted from:
+
+        [u_i(t), du_i(t), u_i(t+dt), hidden_context_i(t)]
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int = 128,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+        *,
+        feature_groups: FeatureGroups | None = None,
+        use_source_branch: bool = True,
+        use_proxy_branch: bool = True,
+        state_dim: int = 16,
+    ) -> None:
+        super().__init__()
+
+        if state_dim <= 0:
+            raise ValueError("state_dim must be positive.")
+
+        self.input_dim = int(input_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.num_layers = int(num_layers)
+        self.dropout = float(dropout)
+        self.feature_groups = feature_groups
+        self.use_source_branch = bool(use_source_branch)
+        self.use_proxy_branch = bool(use_proxy_branch)
+        self.state_dim = int(state_dim)
+
+        if feature_groups is None:
+            local_dim = input_dim
+            source_dim = 0
+            proxy_dim = 0
+        else:
+            # Robust fallback: if local indices are unexpectedly empty,
+            # use the full feature vector as local state input.
+            local_dim = (
+                len(feature_groups.local_indices)
+                if feature_groups.local_indices
+                else input_dim
+            )
+            source_dim = len(feature_groups.source_indices)
+            proxy_dim = len(feature_groups.proxy_indices)
+
+        self.local_dim = int(local_dim)
+        self.source_dim = int(source_dim)
+        self.proxy_dim = int(proxy_dim)
+
+        # ------------------------------------------------------------------
+        # State encoder: local KU state -> vector knowledge state u_i(t).
+        # ------------------------------------------------------------------
+        self.state_encoder = make_mlp(
+            input_dim=self.local_dim,
+            hidden_dim=hidden_dim,
+            output_dim=self.state_dim,
+            num_layers=2,
+            dropout=dropout,
+        )
+        self.state_norm = nn.LayerNorm(self.state_dim)
+
+        # ------------------------------------------------------------------
+        # Local reaction term R_i(t) ∈ R^d.
+        # ------------------------------------------------------------------
+        self.reaction = make_mlp(
+            input_dim=self.local_dim + self.state_dim,
+            hidden_dim=hidden_dim,
+            output_dim=self.state_dim,
+            num_layers=2,
+            dropout=dropout,
+        )
+
+        # ------------------------------------------------------------------
+        # Carrier source injection S_i(t) ∈ R^d.
+        #
+        # v2 uses a gated source injection to reduce instability observed in
+        # scalar v1 local_source runs.
+        # ------------------------------------------------------------------
+        if self.use_source_branch and source_dim > 0:
+            self.source = make_mlp(
+                input_dim=source_dim,
+                hidden_dim=hidden_dim,
+                output_dim=self.state_dim,
+                num_layers=2,
+                dropout=dropout,
+            )
+            self.source_gate = make_mlp(
+                input_dim=source_dim,
+                hidden_dim=hidden_dim,
+                output_dim=self.state_dim,
+                num_layers=2,
+                dropout=dropout,
+            )
+        else:
+            self.source = None
+            self.source_gate = None
+
+        # ------------------------------------------------------------------
+        # Proxy / prior field injection P_i(t) ∈ R^d.
+        #
+        # Also gated for stability.
+        # ------------------------------------------------------------------
+        if self.use_proxy_branch and proxy_dim > 0:
+            self.proxy = make_mlp(
+                input_dim=proxy_dim,
+                hidden_dim=hidden_dim,
+                output_dim=self.state_dim,
+                num_layers=2,
+                dropout=dropout,
+            )
+            self.proxy_gate = make_mlp(
+                input_dim=proxy_dim,
+                hidden_dim=hidden_dim,
+                output_dim=self.state_dim,
+                num_layers=2,
+                dropout=dropout,
+            )
+        else:
+            self.proxy = None
+            self.proxy_gate = None
+
+        # ------------------------------------------------------------------
+        # Nonnegative vector decay rate lambda_i(t) ∈ R^d.
+        # Decay is applied channel-wise:
+        #
+        #     Lambda_i(t) = lambda_i(t) * u_i(t)
+        # ------------------------------------------------------------------
+        self.decay_rate = make_mlp(
+            input_dim=self.local_dim + self.state_dim,
+            hidden_dim=hidden_dim,
+            output_dim=self.state_dim,
+            num_layers=2,
+            dropout=dropout,
+        )
+
+        # True graph flux diffusion D_i(t).
+        self.flux_diffusion = GraphFluxDiffusion()
+
+        # General high-dimensional context encoder.
+        self.context = make_mlp(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            output_dim=hidden_dim,
+            num_layers=max(num_layers, 2),
+            dropout=dropout,
+            layer_norm=True,
+        )
+
+        # Learnable positive dt and du_scale.
+        # softplus(0.5) ~= 0.97, close to 1.0.
+        self.log_dt = nn.Parameter(torch.tensor(0.5))
+        self.log_du_scale = nn.Parameter(torch.tensor(0.5))
+
+        # Final readout uses vector dynamics plus hidden context.
+        self.readout = nn.Sequential(
+            nn.Linear(hidden_dim + 3 * self.state_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def _select(
+        self,
+        x: torch.Tensor,
+        indices: list[int],
+        *,
+        fallback_all: bool = False,
+    ) -> torch.Tensor:
+        if indices:
+            idx = torch.as_tensor(indices, device=x.device, dtype=torch.long)
+            return x.index_select(dim=1, index=idx)
+
+        if fallback_all:
+            return x
+
+        return x.new_zeros((x.size(0), 0))
+
+    def split_features(
+        self,
+        x: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.feature_groups is None:
+            return x, x.new_zeros((x.size(0), 0)), x.new_zeros((x.size(0), 0))
+
+        local_x = self._select(
+            x,
+            self.feature_groups.local_indices,
+            fallback_all=True,
+        )
+        source_x = self._select(x, self.feature_groups.source_indices)
+        proxy_x = self._select(x, self.feature_groups.proxy_indices)
+
+        return local_x, source_x, proxy_x
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        local_x, source_x, proxy_x = self.split_features(x)
+
+        # ------------------------------------------------------------------
+        # Explicit vector knowledge state u_i(t).
+        #
+        # Unlike scalar v1, v2 does not force u >= 0 channel-wise. The vector
+        # state is treated as a learned latent field state. Decay still damps
+        # each channel toward zero.
+        # ------------------------------------------------------------------
+        u = self.state_norm(self.state_encoder(local_x))
+
+        reaction_input = torch.cat([u, local_x], dim=1)
+
+        # R_i(t): local reaction.
+        reaction = self.reaction(reaction_input)
+
+        # S_i(t): gated source injection.
+        if (
+            self.source is not None
+            and self.source_gate is not None
+            and source_x.size(1) > 0
+        ):
+            source_gate = torch.sigmoid(self.source_gate(source_x))
+            source = source_gate * self.source(source_x)
+        else:
+            source = torch.zeros_like(u)
+
+        # P_i(t): gated proxy / prior field term.
+        if (
+            self.proxy is not None
+            and self.proxy_gate is not None
+            and proxy_x.size(1) > 0
+        ):
+            proxy_gate = torch.sigmoid(self.proxy_gate(proxy_x))
+            proxy = proxy_gate * self.proxy(proxy_x)
+        else:
+            proxy = torch.zeros_like(u)
+
+        # D_i(t): true graph diffusion flux over vector state.
+        diffusion = self.flux_diffusion(
+            u,
+            edge_index=edge_index,
+            edge_weight=edge_weight,
+        )
+
+        # Lambda_i(t): nonnegative vector decay / dissipation.
+        decay_rate = F.softplus(self.decay_rate(reaction_input))
+        decay = decay_rate * u
+
+        raw_du = reaction + source + proxy + diffusion - decay
+
+        # Stabilize one-step dynamics.
+        du_scale = F.softplus(self.log_du_scale)
+        du = torch.tanh(raw_du) * du_scale
+
+        dt = F.softplus(self.log_dt)
+        u_next = u + dt * du
+
+        h_context = self.context(x)
+
+        readout_x = torch.cat(
+            [
+                u,
+                du,
+                u_next,
+                h_context,
+            ],
+            dim=1,
+        )
+
+        return self.readout(readout_x).squeeze(-1)
+
+
 def infer_feature_groups_from_names(
     numeric_features: list[str],
     categorical_one_hot_dim: int = 0,
@@ -713,6 +1429,34 @@ def build_model(
             use_source_branch=bool(kwargs.get("use_source_branch", True)),
             use_proxy_branch=bool(kwargs.get("use_proxy_branch", True)),
             add_self_loop=bool(kwargs.get("add_self_loop", True)),
+        )
+    
+    if model_name == "rdgnn_style":
+        return RDGNNStyleRegressor(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout=dropout,
+        )
+
+    if model_name == "grand_style":
+        return GRANDStyleRegressor(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout=dropout,
+        )
+
+    if model_name == "dynamic_rds":
+        return DynamicRDSRegressor(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout=dropout,
+            feature_groups=feature_groups,
+            use_source_branch=bool(kwargs.get("use_source_branch", True)),
+            use_proxy_branch=bool(kwargs.get("use_proxy_branch", True)),
+            state_dim=int(kwargs.get("dynamic_state_dim", 16)),
         )
 
     raise AssertionError("Unreachable model factory branch.")
