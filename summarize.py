@@ -5,15 +5,12 @@ import pandas as pd
 base = Path("data/results/knowledge_field/temporal_gnn")
 
 runs = [
-    "local_dynamic_rds_v2_state8_seed42",
-    "local_dynamic_rds_v2_state16_seed42",
-    "local_dynamic_rds_v2_state32_seed42",
-    "local_source_dynamic_rds_v2_state8_seed42",
-    "local_source_dynamic_rds_v2_state16_seed42",
-    "local_source_dynamic_rds_v2_state32_seed42",
-    "local_source_proxy_dynamic_rds_v2_state8_seed42",
-    "local_source_proxy_dynamic_rds_v2_state16_seed42",
-    "local_source_proxy_dynamic_rds_v2_state32_seed42"
+    "local_source_proxy_dynamic_rds_v2_state8_no_decay_seed42",
+    "local_source_proxy_dynamic_rds_v2_state8_no_diffusion_seed42",
+    "local_source_proxy_dynamic_rds_v2_state8_no_proxy_seed42",
+    "local_source_proxy_dynamic_rds_v2_state8_no_reaction_seed42",
+    "local_source_proxy_dynamic_rds_v2_state8_no_source_seed42",
+    "local_source_proxy_dynamic_rds_v2_state8_seed42"
     ]
 
 rows = []
