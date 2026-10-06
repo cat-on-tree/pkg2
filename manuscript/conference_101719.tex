@@ -1,0 +1,368 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+\title{Cutoff-Safe Knowledge-Unit Graph Dynamics for\\
+Prospective Biomedical Translation
+\thanks{This work was supported by the Science and Technology Development Fund of Macau SAR (No.: 0002/2025/NRP, 0008/2025/EQP, and 0049/2024/AGJ), the University of Macau, the University of Macau Development Foundation (UMDF), and the Dr. Stanley Ho Medical Development Foundation (No.: MYRG-CRG2023-00007-ICMS-IAS, MYRG-GRG2024-00268-ICMS-UMDF, UMDF-TISF/2025/011/ICMS, and SHMDF-AI/2026/003), and the National Key Laboratory of Drug Regulatory Science (No.: 2026SKLDRS03110, 2026.3--2028.2).}
+}
+
+\author{\IEEEauthorblockN{1\textsuperscript{st} Ruihu Du}
+\IEEEauthorblockA{\textit{State Key Laboratory of Mechanism and} \\
+\textit{Quality of Chinese Medicine}\\
+\textit{University of Macau}\\
+Macao SAR, China \\
+du.ruihu@connect.um.edu.mo}
+\and
+\IEEEauthorblockN{2\textsuperscript{nd} Dongyang Liu}
+\IEEEauthorblockA{\textit{Drug Clinical Trial Center} \\
+\textit{Peking University Third Hospital}\\
+Beijing, China \\
+liudongyang@vip.sina.com}
+\and
+\IEEEauthorblockN{3\textsuperscript{rd} Yuanjia Hu}
+\IEEEauthorblockA{\textit{State Key Laboratory of Mechanism} \\
+\textit{and Quality of Chinese Medicine}\\
+\textit{University of Macau}\\
+Macao SAR, China \\
+yuanjiahu@um.edu.mo}
+}
+
+\maketitle
+\begin{abstract}
+Anticipating which biomedical findings will progress toward clinical or commercial translation is a central challenge in translational research. Because such translation unfolds as knowledge emerges and propagates over time, it is naturally cast as a dynamical process. However, prevailing graph-learning approaches, primarily smooth node representations, afford limited mechanistic insight, and are frequently assessed under protocols that leak future information. We therefore reformulate prospective translation as a strictly cutoff-safe ranking task over Knowledge Units, defined as typed entity pairs abstracted from heterogeneous biomedical carriers, in which positive instances are rare. From a diabetes-domain carrier graph, we construct a large-scale temporal evaluation dataset of 715,912 Knowledge Units with leakage-controlled splits. Drawing on graph diffusion and reaction-diffusion dynamical systems, we instantiate DynamicRDS, a knowledge-field dynamics formulation that endows each Knowledge Unit with an evolving latent state governed by interpretable reaction, source, proxy, diffusion-flux, and decay terms. Preliminary experiments indicate that graph-based models markedly surpass a graph-free baseline, that the diffusion term contributes most critically, and that DynamicRDS attains competitive and mechanistically interpretable rankings. Sensitivity analysis suggests that DynamicRDS benefits from compact latent states and local graph flux. Calibrating these dynamics for discovering rare positives remains an open direction for further research.
+\end{abstract}
+
+\begin{IEEEkeywords}
+biomedical translation prediction, temporal knowledge graph, graph dynamical systems, reaction-diffusion, knowledge units
+\end{IEEEkeywords}
+
+\section{Introduction}
+Translating scientific discoveries into clinical and commercial outcomes is a defining goal of biomedical research, but the path from an initial finding to an approved therapy or marketable product is long, costly, and highly selective~\cite{fortunato2018science}. Only a small fraction of published findings progress to patents, clinical trials, or approved interventions, and identifying such candidates early would help researchers, funders, and institutions allocate resources more effectively~\cite{ahmadpoor2017dual}. This motivates a prospective question: given biomedical knowledge up to a cutoff time, can we anticipate which evidence-supported knowledge units will later progress toward translation? The difficulties of the task emerge from how it connects to and is reinforced by an evolving body of related evidence. This objective is related to literature-based discovery, where latent biomedical connections are inferred from distributed evidence in the scientific literature~\cite{swanson1986fish}.
+
+The relational nature of scientific knowledge suggests a graph-indexed view, but prospective translation is rarely a static node-embedding problem. Translation unfolds as a temporal process in which evidence accumulates, propagates, dissipates, and is reinforced across related biomedical concepts. This motivates a dynamical-systems view of graph learning. Neural ordinary differential equations model representations as continuous state evolution~\cite{chen2018neural}, and recent graph-based extensions treat graph learning as diffusion or differential dynamics over relational structures~\cite{chamberlain2021grand,rusch2022graphcon}. Reaction-diffusion formulations further model local reaction and graph-mediated transport as interacting components of state evolution~\cite{eliasof2024graph}. Building on this line of work, we regard the translation potential of a Knowledge Unit as a latent state continually reshaped by a surrounding knowledge field.
+
+Despite these advances, existing graph dynamical models are not designed for prospective biomedical translation prediction. First, many graph diffusion models primarily smooth or propagate representations over a graph, which makes it difficult to attribute a candidate's score to local activity, source exposure, incoming diffusion, or decay. Second, dynamical formulations on graphs are seldom instantiated as explicit, decomposable state equations whose terms carry substantive meaning. Third, temporal graph methods are often evaluated under protocols that inadvertently expose future information, for example through non-temporal sampling or splitting strategies~\cite{kapoor2023leakage}. Such leakage undermines prospective claims. These gaps call for a framework that is explicit in its dynamics, interpretable in its mechanisms, and faithful to the temporal order in which knowledge becomes available.
+
+Motivated by these gaps, we study prospective biomedical translation through three elements. This direction builds on biomedical knowledge-graph studies that integrate heterogeneous evidence to prioritize translational hypotheses such as drug-repurposing candidates~\cite{himmelstein2017systematic}. First, we abstract papers, patents, and clinical trials into typed entity pairs termed Knowledge Units. Second, we cast the problem as a strictly cutoff-safe ranking task: given evidence available up to a fixed time, the model ranks candidate KUs by their likelihood of subsequent translation. On a diabetes-domain carrier graph derived from PubMed Knowledge Graph 2.0 (PKG 2.0) spanning 2000--2024~\cite{xu2024pubmed}, we instantiate 715,912 KUs with leakage-controlled training, validation, and test splits. Third, we develop DynamicRDS, a knowledge-field dynamics model in which each KU carries an evolving latent state updated through interpretable reaction, source, proxy, diffusion-flux, and decay terms.
+
+Experiments show that graph-based models substantially outperform a graph-free baseline and that reaction-diffusion-source variants form the strongest current model family. DynamicRDS provides an explicit vector-state formulation with mechanism-level diagnostic terms and competitive global ranking performance, while a static reaction-diffusion-source variant currently gives the strongest top-K ranking. Ablations further suggest that diffusion flux is particularly important for DynamicRDS top-K behavior. These findings position DynamicRDS as an interpretable dynamical model of prospective translation, while identifying top-K calibration as the central open challenge.
+
+This paper, presented as work in progress within a doctoral research program, makes the following contributions:
+
+\begin{itemize}
+\item We formulate prospective biomedical translation as a strictly cutoff-safe, rare-positive ranking task over Knowledge Units, a typed entity-pair abstraction of heterogeneous biomedical records.
+\item We instantiate a temporal evaluation dataset of 715,912 KUs from PKG 2.0 spanning 2000--2024, with leakage-controlled splits that respect knowledge availability over time.
+\item We develop DynamicRDS, a knowledge-field dynamics model whose latent state is governed by interpretable reaction, source, proxy, diffusion-flux, and decay terms.
+\item It is shown that graph-based models outperform a graph-free baseline and that reaction-diffusion-source variants form the strongest current family, while identifying top-K calibration as a key limitation.
+\end{itemize}
+
+This work marks an early stage of a broader doctoral effort toward interpretable dynamical models of scientific translation. The central open problem is how to calibrate an evolving dynamical state so that it reliably surfaces rare, early-stage KUs at the top of the ranking and generalizes beyond a single disease domain.
+
+\section{Task and Data}
+
+\subsection{Knowledge Units and Prediction Task}
+
+We formalize prospective biomedical translation prediction as a temporal ranking problem over evidence-supported biomedical knowledge units. The basic unit of analysis is a \emph{Knowledge Unit} (KU), defined as a typed pair of BioEntities that are co-mentioned within a shared evidence carrier, such as a paper, patent, or clinical trial. Formally, a KU is an unordered BioEntity pair represented in a canonical orientation $(e_a, e_b)$ according to the entity types. In this work, we consider three translationally relevant pair types: chemical--disease, gene--disease, and chemical--gene.
+
+Each KU is associated with a time-stamped evidence stream indicating when the entity pair is jointly observed and in which carrier type the observation occurs. This stream defines cutoff-specific KU states using evidence available up to the prediction time. The task is to predict whether such evidence-supported entity pairs will later receive translational signals, such as patent or clinical-trial evidence.
+
+Given a KU $i$ and a cutoff year $t$, the model observes evidence accumulated up to and including year $t$. Let $\mathbf{x}_i(t)$ denote the cutoff-specific state of KU $i$, summarizing its historical paper, patent, and clinical-trial evidence, recent activity, growth, recency, source exposure, and neighborhood-derived proxy features. The main task considers KUs with prior paper evidence but no prior patent or clinical-trial evidence at cutoff $t$. For a horizon of $H=3$ years, the heat target is
+\begin{equation}
+y_i(t)=\log\left(1+c_i^{\mathrm{patent}}(t,H)+c_i^{\mathrm{trial}}(t,H)\right),
+\end{equation}
+where $c_i^{\mathrm{patent}}(t,H)$ and $c_i^{\mathrm{trial}}(t,H)$ are the numbers of future patent and clinical-trial evidence carriers observed during years $t+1$ through $t+H$. We also define the binary emergence label
+\begin{equation}
+z_i(t)=\mathbb{I}\left[c_i^{\mathrm{patent}}(t,H)+c_i^{\mathrm{trial}}(t,H)>0\right].
+\end{equation}
+The objective is to rank eligible KUs so that those with future translational evidence appear near the top. Because positives are rare, we emphasize AUPRC and top-ranked discovery metrics, including Precision@1000, NDCG@1000, and enrichment over the background positive rate.
+
+\subsection{Dataset Instantiation and Cutoff-Safe Splits}
+
+We instantiate the task using PKG 2.0, a large biomedical knowledge graph that connects papers, patents, and clinical trials through biomedical entity linkages, citation linkages, and project linkages~\cite{xu2024pubmed}. From PKG 2.0, we derive a diabetes-domain carrier graph over the years 2000--2024. The KU construction in this study uses BioEntity co-mention evidence from three carrier types: papers, patents, and clinical trials. We exclude species-type BioEntities and retain three translationally relevant KU pair types: chemical--disease, gene--disease, and chemical--gene.
+
+The resulting dataset contains 715,912 KUs, 13,772,584 carrier-to-KU evidence edges, and a KU--KU graph connecting KUs that share BioEntities. The held-out 2021 test set contains 563,533 eligible KUs with a positive rate of 1.82\%. Table~\ref{tab:data_summary} summarizes the temporal evaluation dataset.
+
+We use a cutoff-based temporal protocol. Training examples use cutoff years 2005--2018, validation examples use 2019--2020, and the held-out test uses cutoff 2021 with target years 2022--2024. All historical counts, activity, growth, source exposure, and graph-neighborhood proxy features are computed from evidence observed at or before the cutoff. Future patent and clinical-trial evidence is used to define targets, and the test cutoff is used only for final reporting.
+
+\begin{table}[t]
+\caption{Summary of the temporal evaluation dataset.}
+\label{tab:data_summary}
+\centering
+\small
+\begin{tabular}{lr}
+\hline
+Item & Value \\
+\hline
+Source graph & PKG 2.0 \\
+Domain & Diabetes \\
+Evidence years & 2000--2024 \\
+Knowledge Units & 715,912 \\
+Carrier-to-KU evidence edges & 13,772,584 \\
+KU--KU directed edge entries & $\sim$17M \\
+Train cutoffs & 2005--2018 \\
+Validation cutoffs & 2019--2020 \\
+Test cutoff & 2021 \\
+Test target years & 2022--2024 \\
+Eligible test KUs & 563,533 \\
+Future positives & 10,233 \\
+Positive rate & 1.82\% \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Knowledge-Unit Graph Dynamics}
+
+The task yields a graph-indexed temporal prediction problem: each eligible KU has cutoff-specific features and lies in a KU--KU graph derived from shared BioEntities. We use this graph as the spatial support of reaction-diffusion-source models that combine local state, carrier-source exposure, neighborhood proxy features, and graph-based diffusion.
+
+\subsection{Static Reaction-Diffusion-Source Predictor}
+
+We first define Static RDS, a strong reaction-diffusion-source predictor. It decomposes the cutoff-specific feature vector into local, source, and proxy groups. The local group encodes the focal KU temporal trajectory, the source group summarizes carrier-level structural exposure, and the proxy group contains handcrafted neighborhood diffusion summaries. Static RDS maps these groups into a common hidden space and combines them with a weighted graph diffusion encoder:
+\begin{equation}
+\mathbf{h}_i =
+\mathrm{LN}\left(
+\mathbf{r}_i + \mathbf{s}_i + \mathbf{p}_i + \mathbf{d}_i
+\right),
+\end{equation}
+where $\mathbf{r}_i=R_\theta(\mathbf{x}_i^{\mathrm{local}})$ is the local reaction representation, $\mathbf{s}_i=S_\phi(\mathbf{x}_i^{\mathrm{source}})$ is the carrier-source representation, $\mathbf{p}_i=P_\eta(\mathbf{x}_i^{\mathrm{proxy}})$ is the proxy representation, and $\mathbf{d}_i$ is obtained from weighted message passing over the KU--KU graph. The final score is
+\begin{equation}
+s_i = \mathrm{Head}(\mathbf{h}_i).
+\end{equation}
+Static RDS is therefore a strong static field readout, but it does not evolve an explicit latent state from $t$ to $t+\Delta t$.
+
+\subsection{DynamicRDS Vector-State Dynamics}
+
+DynamicRDS extends the static decomposition by assigning each KU an explicit vector-valued latent state $\mathbf{u}_i(t)\in\mathbb{R}^d$. In our experiments, $d=8$. The state is initialized from the local KU features:
+\begin{equation}
+\mathbf{u}_i(t) = \mathrm{LN}\left(E_\psi(\mathbf{x}_i^{\mathrm{local}}(t))\right).
+\end{equation}
+Inspired by reaction-diffusion-source dynamics, DynamicRDS performs an Euler-style update:
+\begin{equation}
+\mathbf{u}_i(t+\Delta t)
+=
+\mathbf{u}_i(t)
++
+\Delta t
+\left[
+\mathbf{R}_i(t)
++
+\mathbf{S}_i(t)
++
+\mathbf{P}_i(t)
++
+\mathbf{D}_i(t)
+-
+\boldsymbol{\Lambda}_i(t)
+\right].
+\label{eq:dynamic_rds}
+\end{equation}
+The terms correspond to local reaction, carrier-source injection, proxy prior, graph diffusion flux, and decay. The graph diffusion term is a state-difference flux:
+\begin{equation}
+\mathbf{D}_i(t)
+=
+\sum_{j\in\mathcal{N}(i)}
+\kappa_{ij}
+\left(
+\mathbf{u}_j(t)-\mathbf{u}_i(t)
+\right),
+\label{eq:flux}
+\end{equation}
+where $\kappa_{ij}$ is the normalized edge weight. The decay term is applied channel-wise:
+\begin{equation}
+\boldsymbol{\Lambda}_i(t)=\boldsymbol{\lambda}_i(t)\odot \mathbf{u}_i(t),
+\end{equation}
+with nonnegative decay rate $\boldsymbol{\lambda}_i(t)$. The final prediction score is computed from the current state, state change, next state, and a high-dimensional context representation:
+\begin{equation}
+s_i(t)=
+\mathrm{Head}\left(
+[
+\mathbf{u}_i(t),
+\Delta \mathbf{u}_i(t),
+\mathbf{u}_i(t+\Delta t),
+\mathbf{c}_i(t)
+]
+\right),
+\end{equation}
+where $\Delta \mathbf{u}_i(t)=\mathbf{u}_i(t+\Delta t)-\mathbf{u}_i(t)$ and $\mathbf{c}_i(t)$ is encoded from the full cutoff-specific feature vector.
+
+These quantities enable diagnosis of whether a high-ranked KU is driven by local reaction, source exposure, diffusion, proxy prior, or low decay.
+
+\section{Experiments}
+
+\subsection{Experimental Setup}
+
+We evaluate all models on the held-out 2021 cutoff. Models observe only evidence available up to 2021 and rank eligible KUs by future translation signal during 2022--2024. Unless otherwise stated, all models use the same local, source, and proxy features and the same KU--KU graph.
+
+All neural models use hidden dimension 128, two graph or hidden layers where applicable, AdamW with learning rate $3\times10^{-4}$, weight decay $10^{-4}$, dropout 0.2, SmoothL1 loss on the future heat target, and early stopping by validation AUPRC. Graph models use neighbor sampling with fanouts 15 and 10. For DynamicRDS, the reported main configuration was selected from the sensitivity analysis: state dimension $d=8$, two layers, neighbor fanouts 15 and 10, dropout 0.2, learning rate $3\times10^{-4}$, and weight decay $10^{-4}$.
+
+\subsection{Baselines}
+
+We compare DynamicRDS with six baselines. MLP is a no-graph neural baseline. GraphSAGE is a neighborhood-aggregation baseline~\cite{hamilton2017graphsage}. WeightedDiffusion tests edge-weighted propagation over the KU--KU graph. GRAND-style represents a graph diffusion or neural-PDE-style baseline~\cite{chamberlain2021grand}. RDGNN-style represents a generic reaction-diffusion baseline based on hidden-state differences~\cite{eliasof2024graph}. Static RDS uses the same reaction-source-proxy-diffusion decomposition as DynamicRDS but does not update an explicit latent state.
+
+The Static RDS versus DynamicRDS comparison tests whether explicit vector-state dynamics can provide competitive prediction while exposing state change, diffusion flux, and decay mechanisms.
+
+\subsection{Evaluation Metrics}
+
+Because the task is highly imbalanced, with a test positive rate of 1.82\%, we emphasize ranking-oriented metrics and AUPRC, following prior work showing that precision-recall evaluation is informative for skewed binary classification~\cite{saito2015precision}. We report AUPRC, AUROC, Spearman correlation with future heat, Precision@1000, NDCG@1000, and Enrichment@1000. Enrichment@1000 is Precision@1000 divided by the background positive rate.
+
+\subsection{Main Results}
+
+Table~\ref{tab:main_results} summarizes the comparison. Graph-based models consistently outperform the no-graph MLP baseline on top-ranked discovery metrics, confirming that the KU--KU graph contains predictive signal beyond focal KU features.
+
+\begin{table*}[t]
+\caption{Results on the held-out 2021 test cutoff. Values are mean $\pm$ standard deviation.}
+\label{tab:main_results}
+\centering
+\small
+\begin{tabular}{lcccccc}
+\hline
+Model & AUPRC & AUROC & Spearman & P@1000 & NDCG@1000 & Enrich@1000 \\
+\hline
+MLP
+& $0.0434 \pm 0.0006$
+& $0.7113 \pm 0.0026$
+& $0.0978 \pm 0.0012$
+& $0.0768 \pm 0.0120$
+& $0.0705 \pm 0.0126$
+& $4.23 \pm 0.66$ \\
+GraphSAGE
+& $0.0457 \pm 0.0007$
+& $0.7156 \pm 0.0026$
+& $0.0998 \pm 0.0012$
+& $0.1142 \pm 0.0108$
+& $0.1182 \pm 0.0078$
+& $6.29 \pm 0.60$ \\
+WeightedDiffusion
+& $0.0456 \pm 0.0010$
+& $0.7168 \pm 0.0013$
+& $0.1003 \pm 0.0006$
+& $0.1000 \pm 0.0146$
+& $0.1031 \pm 0.0172$
+& $5.51 \pm 0.80$ \\
+GRAND-style
+& $0.0466 \pm 0.0007$
+& $0.7165 \pm 0.0022$
+& $0.1002 \pm 0.0010$
+& $0.1114 \pm 0.0119$
+& $0.1234 \pm 0.0148$
+& $6.13 \pm 0.65$ \\
+RDGNN-style
+& $0.0477 \pm 0.0008$
+& $0.7192 \pm 0.0008$
+& $0.1016 \pm 0.0005$
+& $0.1214 \pm 0.0104$
+& $0.1283 \pm 0.0117$
+& $6.69 \pm 0.57$ \\
+Static RDS
+& $0.0477 \pm 0.0006$
+& $0.7192 \pm 0.0012$
+& $0.1014 \pm 0.0005$
+& $\mathbf{0.1260 \pm 0.0102}$
+& $\mathbf{0.1375 \pm 0.0096}$
+& $\mathbf{6.94 \pm 0.56}$ \\
+DynamicRDS
+& $0.0476 \pm 0.0009$
+& $\mathbf{0.7208 \pm 0.0014}$
+& $\mathbf{0.1022 \pm 0.0006}$
+& $0.1148 \pm 0.0120$
+& $0.1213 \pm 0.0165$
+& $6.32 \pm 0.66$ \\
+\hline
+\end{tabular}
+\end{table*}
+
+The best models belong to the reaction-diffusion-source family. Static RDS achieves the best top-K performance, with Precision@1000 of $0.1260 \pm 0.0102$, NDCG@1000 of $0.1375 \pm 0.0096$, and Enrichment@1000 of $6.94 \pm 0.56$. RDGNN-style is also strong, suggesting that reaction-diffusion inductive bias is well matched to the task.
+
+DynamicRDS achieves the strongest global ranking metrics, including AUROC and Spearman correlation, and obtains competitive top-K performance after sensitivity-based tuning. However, it does not yet outperform Static RDS on the primary top-ranked discovery metrics. We interpret this as a calibration problem: explicit vector-state dynamics provides a more mechanistic and diagnosable representation, yet its evolving state and graph-flux terms must be further calibrated for extreme rare-positive discovery.
+
+\subsection{Ablation and Sensitivity}
+
+To examine whether the DynamicRDS terms are meaningful structure, we further performed an  ablation of the DynamicRDS update terms. It helps identify which mechanisms most affect top-K behavior.
+
+\begin{table}[t]
+\caption{Ablation of DynamicRDS terms.}
+\label{tab:ablation}
+\centering
+\small
+\begin{tabular}{lccc}
+\hline
+Variant & P@1000 & NDCG@1000 & Enrich@1000 \\
+\hline
+Full DynamicRDS & $\mathbf{0.139}$ & $\mathbf{0.1482}$ & $\mathbf{7.65}$ \\
+w/o diffusion & 0.059 & 0.0547 & 3.25 \\
+w/o reaction & 0.087 & 0.0816 & 4.79 \\
+w/o decay & 0.101 & 0.1011 & 5.56 \\
+w/o source & 0.114 & 0.1242 & 6.28 \\
+w/o proxy & 0.131 & 0.1307 & 7.21 \\
+\hline
+\end{tabular}
+\end{table}
+
+The ablation suggests that graph diffusion flux is the most influential term for top-K ranking. Removing diffusion reduces Precision@1000 from 0.139 to 0.059 and NDCG@1000 from 0.1482 to 0.0547. Removing reaction and decay also degrades performance, indicating that DynamicRDS relies on multiple interacting mechanisms: diffusion propagates state differences, reaction sharpens local candidate behavior, and decay stabilizes the learned state. Removing the proxy term has a smaller effect, but the full model remains strongest in the diagnostic run.
+
+We further conducted a hyperparameter sensitivity analysis for DynamicRDS. It was shown that global ranking metrics were relatively stable, whereas rare-positive top-K metrics exhibited larger variability. Optimization settings were important: increasing dropout to 0.2 and reducing the learning rate to $3\times10^{-4}$ improved top-ranked discovery, while simply increasing the latent state dimension, graph depth, or neighbor fanout did not yield consistent gains. Confirmation grid further identified the compact state setting $d=8$ with 15/10 neighbor sampling as the best overall configuration, achieving AUPRC $0.0476 \pm 0.0009$, Precision@1000 $0.1148 \pm 0.0120$, NDCG@1000 $0.1213 \pm 0.0165$, and Enrichment@1000 $6.32 \pm 0.66$. A sparser 10/5 neighbor configuration achieved slightly lower mean top-K performance but smaller variance, suggesting that DynamicRDS benefits from local graph flux. Overall, the sensitivity results indicate that high-dimensional state capacity is not necessary, meanwhile that rare-positive top-K discovery remains sensitive to optimization and dynamic-state calibration.
+
+\begin{table}[t]
+\caption{Targeted DynamicRDS sensitivity analysis.}
+\label{tab:sensitivity}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lccc@{}}
+\hline
+Config. & AUPRC & P@1k & NDCG@1k \\
+\hline
+Initial
+& $0.0461{\pm}0.0005$
+& $0.0960{\pm}0.0220$
+& $0.0980{\pm}0.0249$ \\
+$d{=}8$, 10/5
+& $0.0471{\pm}0.0003$
+& $0.1082{\pm}0.0056$
+& $0.1124{\pm}0.0065$ \\
+$d{=}8$, 15/10
+& $\mathbf{0.0476{\pm}0.0009}$
+& $\mathbf{0.1148{\pm}0.0120}$
+& $\mathbf{0.1213{\pm}0.0165}$ \\
+$d{=}16$, 15/10
+& $0.0469{\pm}0.0012$
+& $0.1072{\pm}0.0143$
+& $0.1141{\pm}0.0145$ \\
+\hline
+\end{tabular}
+\end{table}
+
+Overall, the experiments suggest three findings. First, graph-based models improve over a no-graph MLP baseline. Second, reaction-diffusion-source variants form the strongest current model family, with Static RDS providing the strongest top-K predictor in the comparison. Third, DynamicRDS provides a competitive explicit graph-dynamical formulation and interpretable state-update terms, but its top-K calibration remains an open challenge.
+
+\section{Ongoing Doctoral Research Plan}
+
+The current results identify reaction-diffusion-source graph dynamics as a promising model family. However, a central research problem was revealed: explicit dynamic-state models must be calibrated for rare-positive top-ranked discovery. Static RDS currently gives the strongest top-K performance, whereas DynamicRDS provides a more explicit vector-state formulation with access to state change, diffusion flux, and decay. The sensitivity analysis further suggests that compact states and local graph flux are sufficient for stable global ranking, but top-K discovery remains sensitive to optimization and calibration. The next stage of the research will therefore focus on closing the gap between predictive sharpness and mechanistic interpretability.
+
+First, we will study dynamic-state calibration, including term-scale normalization for reaction, source, proxy, diffusion, and decay components; top-K-aware validation criteria; and calibration of the learned state $\mathbf{u}_i(t)$ and state change $\Delta\mathbf{u}_i(t)$. Second, we will evaluate temporal robustness across multiple test cutoffs. The present 2021 cutoff is a recent prospective test, but may be affected by right-edge observation issues; future experiments will compare 2019, 2020, and 2021 cutoffs. Third, we will develop mechanism-level interpretation by using reaction, source, proxy, diffusion-flux, and decay terms to explain whether top candidates are locally activated, source-driven, diffusion-driven, or stabilized by low decay. Finally, we will extend the framework beyond diabetes and add biomedical case-level validation with evidence traces for expert review.
+
+\section{Conclusion}
+
+We presented a cutoff-safe Knowledge-Unit graph dynamics framework for prospective biomedical translation prediction. Using a diabetes-domain carrier graph derived from PKG 2.0, we constructed a temporal dataset over typed BioEntity-pair KUs and evaluated graph-based ranking models for future patent and clinical-trial evidence. Results show that graph models outperform a no-graph baseline and that reaction-diffusion-source variants form the strongest current model family. Static RDS provides the strongest top-K predictor, while DynamicRDS offers an explicit vector-state formulation with interpretable reaction, source, diffusion, and decay terms. These results motivate the next stage of the dissertation: calibrating explicit knowledge-field dynamics for rare-positive top-ranked biomedical discovery.
+
+\section*{Code Availability}
+
+The source code for data processing, KU construction, model training, and evaluation is available at \texttt{https://github.com/cat-on-tree/pkg2}. Large intermediate artifacts derived from PKG 2.0 are not redistributed; the repository provides scripts, configuration files, and documentation for reproducing the workflow from source resources.
+
+\section*{Acknowledgment}
+
+The authors thank members of the research group for helpful discussions on biomedical knowledge representation, temporal evaluation design, and preliminary experiments. The authors acknowledge PubMed Knowledge Graph 2.0 as the source resource used to construct the diabetes-domain carrier graph. Computational resources were provided by the High-performance Computing Platform of Peking University (PKU-HPCC).
+
+\textit{Disclosure of AI assistance.} The authors used OpenAI ChatGPT for manuscript organization and language polishing. All scientific claims, experimental results, interpretations, and final manuscript content were reviewed, edited, and approved by the authors, who remain fully responsible for the work.
+
+\bibliographystyle{IEEEtran}
+\bibliography{reference}
+\end{document}
